@@ -657,7 +657,7 @@ async function act(a, d){
         const j = await api('login', { pin:F.pin });
         if(j.ok){ STAFF = F.pin; ROLE = j.role || 'manager'; SERVERPIN = j.serverPin || ''; go('staff'); refresh().then(() => { if(F.view === 'staff') render(); }); return; }
         F.err = 'That PIN does not match. Try again.';
-      }catch(e){ F.err = 'Can\'t reach the server to check the PIN.'; }
+      }catch(e){ F.err = e instanceof TypeError ? 'Can\'t reach the server to check the PIN.' : 'Server says: ' + e.message; } // CLAUDE: show the real server message
       F.pin = ''; render(); break;
     }
     case 'tab':
