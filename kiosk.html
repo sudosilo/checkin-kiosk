@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<!--
+  RED PHONE: Check-In Kiosk, v2. Front end for the guest kiosk and the staff side.
+  RED PHONE: v1 kept everything in the browser. v2 saves every visit and reservation to Redis
+  RED PHONE: through /api/kiosk so nothing ends up in a trash can.
+  RED PHONE: Staff side: hold the gear 1.5s on the kiosk, or open the site address with /staff on the end.
+  RED PHONE: Flow tab draws a weekday by hour heat map and turns it into a full staff / half staff plan.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>Check-In Kiosk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bowlby+One&family=Figtree:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+/* RED PHONE: light diner palette, mint and cherry, no dark backgrounds */
+:root{
+  --bg:#e3efeb; --panel:#ffffff; --soft:#f2f8f6; --ink:#1e3940; --ink2:#4f6c72;
+  --cherry:#b3202e; --cherry-d:#8f1823; --mustard:#f2b632; --line:#c7ddd5; --mintmark:#7fbcab;
+  --display:"Bowlby One","Arial Black",Impact,sans-serif;
+  --body:Figtree,"Segoe UI",Roboto,system-ui,sans-serif;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px);height:100%}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body)}
+body{min-height:100%;-webkit-tap-highlight-color:transparent}
+body::before{content:"";display:block;height:14px;
+  background:conic-gradient(var(--cherry) 25%,#fff 0 50%,var(--cherry) 0 75%,#fff 0) 0 0/28px 28px}
+#app{max-width:820px;margin:0 auto;padding:14px 20px 90px}
+.top{display:flex;justify-content:space-between;align-items:center;padding:6px 0 14px;border-bottom:3px solid var(--ink);margin-bottom:24px}
+.brand{font:400 20px var(--display)}
+.clock{font-weight:700;font-size:18px;color:var(--ink2)}
+h1{font:400 clamp(44px,10vw,76px)/1 var(--display);margin:6px 0 14px;letter-spacing:-.5px}
+h2{font:400 clamp(30px,6vw,40px)/1.05 var(--display);margin:4px 0 8px}
+h3{font:800 21px var(--body);margin:26px 0 8px}
+.sub{font-size:20px;line-height:1.45;color:var(--ink2);max-width:36ch;margin:0}
+.waitstrip{display:flex;align-items:baseline;gap:8px 16px;flex-wrap:wrap;background:var(--panel);border:2px solid var(--ink);border-radius:14px;padding:16px 20px;margin:26px 0 18px}
+.waitstrip b{font:400 36px var(--display);color:var(--cherry)}
+.waitstrip span{font-size:18px;color:var(--ink2)}
+.notice{background:#fff4d6;border-left:6px solid var(--mustard);padding:12px 16px;border-radius:8px;font-size:17px;line-height:1.4;margin-bottom:18px}
+.offline{background:#fde3e5;border-left:6px solid var(--cherry);padding:14px 16px;border-radius:8px;font-size:18px;font-weight:700;margin-bottom:18px}
+.choices{display:grid;gap:16px;grid-template-columns:1fr 1fr}
+@media (max-width:560px){.choices{grid-template-columns:1fr}}
+.big{min-height:160px;border-radius:18px;border:3px solid var(--ink);background:var(--panel);font:800 27px var(--body);color:var(--ink);text-align:left;padding:22px;display:flex;flex-direction:column;justify-content:flex-end;cursor:pointer}
+.big small{font-weight:500;font-size:17px;color:var(--ink2);margin-top:6px}
+.big.primary{background:var(--cherry);border-color:var(--cherry-d);color:#fff}
+.big.primary small{color:#fde0e3}
+.big:disabled{opacity:.45;cursor:not-allowed}
+.big:active,.btn:active,.chip:active{transform:translateY(2px)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:4px solid var(--mustard);outline-offset:2px}
+label.f{display:block;font-weight:700;font-size:19px;margin:24px 0 8px}
+.hint{font-size:15px;color:var(--ink2);margin-top:6px}
+input.t{width:100%;font:500 24px var(--body);padding:16px 18px;border:2px solid var(--ink);border-radius:12px;background:#fff;color:var(--ink)}
+.stepper{display:flex;align-items:center;border:2px solid var(--ink);border-radius:12px;width:max-content;background:#fff;overflow:hidden}
+.stepper button{width:74px;height:74px;font:800 34px var(--body);background:var(--soft);border:0;color:var(--ink);cursor:pointer}
+.stepper output{width:92px;text-align:center;font:400 38px var(--display)}
+.chips{display:flex;flex-wrap:wrap;gap:10px}
+.chip{padding:12px 18px;border-radius:999px;border:2px solid var(--ink);background:#fff;font:700 17px var(--body);color:var(--ink);cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--ink);color:#fff}
+.chip:disabled{opacity:.35;cursor:not-allowed}
+.actions{display:flex;gap:12px;margin-top:30px;flex-wrap:wrap}
+.btn{padding:18px 26px;border-radius:14px;font:800 20px var(--body);border:2px solid var(--ink);background:#fff;color:var(--ink);cursor:pointer}
+.btn.go{background:var(--cherry);border-color:var(--cherry-d);color:#fff;flex:1;min-width:200px}
+.btn:disabled{opacity:.5;cursor:wait}
+.err{color:var(--cherry);font-weight:700;margin-top:10px;min-height:1.3em}
+.match{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;text-align:left;background:#fff;border:2px solid var(--ink);border-radius:14px;padding:18px 20px;margin-top:12px;font:700 21px var(--body);color:var(--ink);cursor:pointer}
+.match span{font-weight:500;color:var(--ink2);font-size:17px}
+/* RED PHONE: the ticket stays the one loud element on the guest side */
+.ticket{background:#fff;border:2px solid var(--ink);border-bottom:0;border-radius:16px 16px 0 0;padding:24px 26px 40px;margin-top:8px;
+  -webkit-mask:radial-gradient(11px at 50% 100%,#0000 97%,#000) 0 0/26px 100% repeat-x;
+          mask:radial-gradient(11px at 50% 100%,#0000 97%,#000) 0 0/26px 100% repeat-x;
+  animation:drop .45s cubic-bezier(.2,.9,.3,1.2)}
+@keyframes drop{from{transform:translateY(-24px) rotate(-1.5deg);opacity:0}to{transform:none;opacity:1}}
+@media (prefers-reduced-motion:reduce){.ticket{animation:none}}
+.tnum{display:flex;justify-content:space-between;font-weight:700;font-size:18px;color:var(--ink2);border-bottom:2px dashed var(--line);padding-bottom:12px;margin-bottom:14px}
+.waitbig{display:flex;align-items:flex-end;gap:12px}
+.waitbig b{font:400 clamp(110px,30vw,190px)/.85 var(--display);color:var(--cherry);letter-spacing:-4px}
+.waitbig span{font:800 26px var(--body);padding-bottom:10px}
+.waitlabel{font-size:19px;color:var(--ink2);margin:10px 0 0}
+.facts{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:20px;border-top:2px dashed var(--line);padding-top:14px}
+.facts span{display:block;color:var(--ink2);font-size:15px}
+.facts b{font-size:21px}
+.resetnote{font-size:15px;color:var(--ink2);margin-top:14px}
+.staffbtn{position:fixed;right:max(14px,env(safe-area-inset-right,0px));bottom:calc(14px + env(safe-area-inset-bottom,0px));width:52px;height:52px;border-radius:50%;border:2px solid var(--line);background:var(--soft);color:var(--ink2);font-size:24px;cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none}
+.staffbtn.holding{border-color:var(--cherry);color:var(--cherry)}
+.pinpad{display:grid;grid-template-columns:repeat(3,90px);gap:12px;margin-top:20px}
+.pinpad button{height:80px;border-radius:14px;border:2px solid var(--ink);background:#fff;font:800 28px var(--body);color:var(--ink);cursor:pointer}
+.pindots{font:400 40px var(--display);letter-spacing:10px;min-height:52px;margin-top:10px}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 6px}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#fff;border:2px solid var(--line);border-radius:12px;padding:12px 14px;margin:8px 0}
+.row .who{flex:1;min-width:170px;font-weight:700;font-size:18px}
+.row small{display:block;font-weight:500;color:var(--ink2);font-size:15px;margin-top:2px}
+.row.dim{opacity:.6}
+.mini{padding:10px 14px;border-radius:10px;font:700 16px var(--body);border:2px solid var(--ink);background:#fff;color:var(--ink);cursor:pointer}
+.mini.go{background:var(--ink);color:#fff}
+.mini.warn{border-color:var(--cherry);color:var(--cherry)}
+.empty{color:var(--ink2);font-size:17px;padding:14px 0}
+.set{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px}
+@media (max-width:560px){.set{grid-template-columns:1fr}}
+.set label{display:block;font-weight:700;font-size:16px;margin:14px 0 6px}
+.set input,.addres input{width:100%;font:500 19px var(--body);padding:12px;border:2px solid var(--ink);border-radius:10px;background:#fff;color:var(--ink)}
+.toggle{display:flex;align-items:center;gap:12px;font-weight:700;font-size:18px;margin-top:18px;cursor:pointer}
+.toggle input{width:28px;height:28px;accent-color:var(--cherry)}
+.addres{display:grid;grid-template-columns:2fr 1fr 1.4fr 1.2fr;gap:8px;align-items:end}
+.addres label{display:block;font-weight:700;font-size:15px;margin:10px 0 6px}
+@media (max-width:620px){.addres{grid-template-columns:1fr 1fr}}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:14px 0 4px}
+.stats div{background:#fff;border:2px solid var(--line);border-radius:12px;padding:12px 14px}
+.stats span{display:block;color:var(--ink2);font-size:14px}
+.stats b{font-size:24px}
+/* RED PHONE: heat map */
+.hm-wrap{overflow-x:auto;border:2px solid var(--ink);border-radius:12px;background:#fff;margin-top:14px;padding:6px}
+table.hm{border-collapse:separate;border-spacing:3px;font-size:13px}
+.hm th{font-weight:700;color:var(--ink2);padding:4px 2px;white-space:nowrap}
+.hm th.day{text-align:left;padding-right:8px;position:sticky;left:0;background:#fff;z-index:1}
+.hm td{width:40px;min-width:40px;height:40px;text-align:center;border-radius:6px;font-weight:700}
+.hm td.full{box-shadow:inset 0 -5px 0 var(--ink)}
+.hm td.half{box-shadow:inset 0 -5px 0 var(--mintmark)}
+.legend{display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:15px;color:var(--ink2);margin-top:10px}
+.legend i{display:inline-block;width:22px;height:14px;border-radius:4px;vertical-align:middle;margin-right:6px}
+.plan p{margin:8px 0;font-size:17px;line-height:1.5}
+.plan b{color:var(--ink)}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="brand" id="brand">Check-In Kiosk</div>
+    <div class="clock" id="clock"></div>
+  </header>
+  <main id="view"><p class="sub">Loading...</p></main>
+</div>
+<button class="staffbtn" id="staffBtn" aria-label="Staff access, hold to open">&#9881;</button>
+
+<script>
+// RED PHONE: state. S mirrors the server, F is the screen in use.
+const STAFF_ROUTE = location.pathname.replace(/\/+$/,'') === '/staff';
+let STAFF = '';
+let S = { settings:{ name:'', tables:4, perParty:12, perRes:8, window:60, full:false, fullBump:15, bigParty:6, bigBump:10, grace:5, minWait:5, openHour:6, closeHour:22, halfBelow:8, fullAt:20 }, visits:[], res:[], online:true, loaded:false };
+const fresh = () => ({ view: STAFF_ROUTE ? 'pin' : 'home', name:'', phone:'', size:2, pref:'any', q:'', results:null, resId:null, ticket:null, ticketAt:0, pin:'', tab:'queue', err:'', busy:false,
+  resDate: dayKey(new Date()), resList:null, range:30, metric:'guests', hist:null, histFor:null, note:'' });
+let F;
+let lastTouch = Date.now();
+
+// RED PHONE: helpers
+const view = document.getElementById('view');
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const now = () => Date.now();
+function dayKey(d){ return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); }
+function dayStart(d){ const x = new Date(d); x.setHours(0,0,0,0); return x.getTime(); }
+function fromKey(k){ const [y,m,d] = k.split('-').map(Number); return new Date(y, m-1, d).getTime(); }
+const fmtClock = ms => new Date(ms).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+const fmtDay = ms => new Date(ms).toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'});
+function hourLabel(h){ h = h % 24; const ap = h < 12 ? 'AM' : 'PM'; const x = h % 12 || 12; return x + ' ' + ap; }
+const hourShort = h => { const x = h % 12 || 12; return x + (h % 24 < 12 ? 'a' : 'p'); };
+const minsUntil = ms => Math.round((ms - now()) / 60000);
+const round5 = n => Math.ceil(n / 5) * 5;
+const pad = n => String(n).padStart(3,'0');
+function ordinal(n){ const s = ['th','st','nd','rd'], v = n % 100; return n + (s[(v-20)%10] || s[v] || s[0]); }
+const prefLabel = { any:'First available', booth:'Booth', table:'Table', counter:'Counter' };
+const resLabel = { booked:'Not here yet', arrived:'Checked in', seated:'Seated', noshow:'No-show', cancelled:'Cancelled' };
+
+// RED PHONE: talk to the server
+async function api(a, body, query){
+  const url = '/api/kiosk?a=' + a + (query ? '&' + new URLSearchParams(query) : '');
+  const opt = body ? { method:'POST', headers:{ 'Content-Type':'application/json', 'x-pin':STAFF }, body:JSON.stringify(body) } : { headers:{ 'x-pin':STAFF } };
+  const r = await fetch(url, opt);
+  const j = await r.json().catch(() => ({ error:'The server sent back something unreadable.' }));
+  if(!r.ok) throw new Error(j.error || 'Server error');
+  return j;
+}
+async function refresh(){
+  const from = dayStart(new Date()), to = from + 86400000;
+  try{
+    const j = await api('state', null, { from, to });
+    S.settings = Object.assign(S.settings, j.settings); S.visits = j.visits; S.res = j.res; S.online = true;
+  }catch(e){ S.online = false; }
+  S.loaded = true;
+  document.getElementById('brand').textContent = S.settings.name || 'Check-In Kiosk';
+}
+
+// RED PHONE: wait math, driven by staff settings
+const waiting = () => S.visits.filter(q => q.status === 'waiting').sort((a,b) => a.createdAt - b.createdAt);
+function resSoon(){
+  const w = S.settings.window;
+  return S.res.filter(r => { if(r.status !== 'booked') return false; const m = minsUntil(r.at); return m >= -15 && m <= w; }).length;
+}
+function estimateWalkin(size){
+  const s = S.settings;
+  let raw = (waiting().length * s.perParty + resSoon() * s.perRes) / Math.max(1, s.tables);
+  if(s.full) raw += s.fullBump;
+  if(size >= s.bigParty) raw += s.bigBump;
+  return Math.max(s.minWait, round5(raw));
+}
+const estimateRes = r => Math.max(S.settings.grace, minsUntil(r.at));
+const remaining = q => Math.max(0, Math.ceil(q.est - (now() - q.createdAt) / 60000));
+const position = q => waiting().findIndex(x => x.id === q.id) + 1;
+
+// RED PHONE: guest screens
+function vHome(){
+  if(!S.loaded) return '<p class="sub">Loading...</p>';
+  const ahead = waiting().length, est = estimateWalkin(2);
+  return `
+  <section>
+    <h1>Welcome in.</h1>
+    <p class="sub">Check yourself in here. We'll call your name when your table is ready.</p>
+    ${S.online ? `<div class="waitstrip">
+      <span>Walk-in wait right now</span><b>about ${est} min</b>
+      <span>${ahead === 0 ? 'Nobody ahead of you' : ahead + (ahead === 1 ? ' party' : ' parties') + ' waiting'}</span>
+    </div>` : `<div class="offline" style="margin-top:26px">Check-in is offline right now. Please let a staff member know you're here.</div>`}
+    ${S.settings.full && S.online ? `<div class="notice">Reservations are full tonight, so walk-in waits are running longer than usual.</div>` : ''}
+    <div class="choices">
+      <button class="big primary" data-act="go-walkin" ${S.online ? '' : 'disabled'}>Walk in<small>No reservation</small></button>
+      <button class="big" data-act="go-res" ${S.online ? '' : 'disabled'}>I have a reservation<small>Find it by name</small></button>
+    </div>
+  </section>`;
+}
+
+function vWalkin(){
+  const est = estimateWalkin(F.size);
+  const chip = k => `<button class="chip" data-act="pref" data-k="${k}" aria-pressed="${F.pref === k}" ${k === 'counter' && F.size > 2 ? 'disabled' : ''}>${prefLabel[k]}</button>`;
+  return `
+  <section>
+    <h2>Walk-in check-in</h2>
+    <p class="sub">Current estimate for your party: about ${est} minutes.</p>
+    <label class="f" for="name">Name for the list</label>
+    <input class="t" id="name" name="name" autocomplete="off" autocapitalize="words" maxlength="30" value="${esc(F.name)}">
+    <label class="f">How many in your party?</label>
+    <div class="stepper">
+      <button data-act="dec" aria-label="One fewer">&minus;</button>
+      <output aria-live="polite">${F.size}</output>
+      <button data-act="inc" aria-label="One more">+</button>
+    </div>
+    <label class="f">Where would you like to sit?</label>
+    <div class="chips">${['any','booth','table','counter'].map(chip).join('')}</div>
+    ${F.size > 2 ? '<div class="hint">Counter seating is for parties of 1 or 2.</div>' : ''}
+    <label class="f" for="phone">Phone number (optional)</label>
+    <input class="t" id="phone" name="phone" inputmode="tel" autocomplete="off" maxlength="14" value="${esc(F.phone)}">
+    <div class="hint">So staff can reach you if you step outside.</div>
+    <div class="err" role="alert">${esc(F.err)}</div>
+    <div class="actions">
+      <button class="btn" data-act="home">Start over</button>
+      <button class="btn go" data-act="checkin-walkin" ${F.busy ? 'disabled' : ''}>${F.busy ? 'Checking in...' : 'Check in'}</button>
+    </div>
+  </section>`;
+}
+
+function vRes(){
+  let list = '';
+  if(F.results){
+    list = F.results.length
+      ? F.results.map(r => `<button class="match" data-act="pick-res" data-id="${esc(r.id)}">${esc(r.name)} <span>${fmtClock(r.at)}, party of ${r.size}</span></button>`).join('')
+      : `<div class="notice" style="margin-top:16px">No reservation found under that name today. Check the spelling, or check in as a walk-in.</div>
+         <div class="actions"><button class="btn" data-act="go-walkin">Check in as a walk-in</button></div>`;
+  }
+  return `
+  <section>
+    <h2>Find your reservation</h2>
+    <p class="sub">Type the name the reservation is under.</p>
+    <label class="f" for="q">Name</label>
+    <input class="t" id="q" name="q" autocomplete="off" autocapitalize="words" maxlength="30" value="${esc(F.q)}">
+    <div class="err" role="alert">${esc(F.err)}</div>
+    <div class="actions">
+      <button class="btn" data-act="home">Start over</button>
+      <button class="btn go" data-act="search-res">Find reservation</button>
+    </div>
+    ${list}
+  </section>`;
+}
+
+function vResConfirm(){
+  const r = S.res.find(x => x.id === F.resId);
+  if(!r){ F.view = 'res'; return vRes(); }
+  const m = minsUntil(r.at);
+  const timing = m > 10 ? `You're ${m} minutes early. We'll seat you as close to ${fmtClock(r.at)} as we can.`
+               : m < -15 ? `Your reservation was for ${fmtClock(r.at)}. We'll fit you in as soon as a table opens.`
+               : `Right on time. Your table should be ready shortly.`;
+  return `
+  <section>
+    <h2>Is this you?</h2>
+    <div class="row" style="border-color:var(--ink);padding:18px 20px">
+      <div class="who" style="font-size:24px">${esc(r.name)}<small>${fmtClock(r.at)}, party of ${r.size}</small></div>
+    </div>
+    <p class="sub" style="margin-top:16px">${timing}</p>
+    <div class="err" role="alert">${esc(F.err)}</div>
+    <div class="actions">
+      <button class="btn" data-act="go-res">Not me</button>
+      <button class="btn go" data-act="checkin-res" ${F.busy ? 'disabled' : ''}>${F.busy ? 'Checking in...' : 'Check in for ' + fmtClock(r.at)}</button>
+    </div>
+  </section>`;
+}
+
+function vTicket(){
+  const q = F.ticket;
+  if(!q){ F = fresh(); return vHome(); }
+  const left = remaining(q), pos = position(q);
+  const reset = Math.max(0, 45 - Math.floor((now() - F.ticketAt) / 1000));
+  return `
+  <section>
+    <div class="ticket" role="status">
+      <div class="tnum"><span>Ticket #${pad(q.ticket)}</span><span>${fmtClock(q.createdAt)}</span></div>
+      <h2>You're on the list, ${esc(q.name)}.</h2>
+      <div class="waitbig"><b id="tLeft">${left}</b><span>min</span></div>
+      <p class="waitlabel">${left === 0 ? 'Your table should be ready any moment. Listen for your name.' : 'Estimated wait. Listen for your name.'}</p>
+      <div class="facts">
+        <div><span>In line</span><b>${pos > 0 ? ordinal(pos) : 'Next'}</b></div>
+        <div><span>Party</span><b>${q.size}</b></div>
+        <div><span>Seating</span><b>${q.type === 'res' ? 'Reserved' : prefLabel[q.pref]}</b></div>
+      </div>
+    </div>
+    <div class="actions"><button class="btn go" data-act="home">Done</button></div>
+    <p class="resetnote" id="resetNote">This screen goes back to the start in ${reset} seconds.</p>
+  </section>`;
+}
+
+function vPin(){
+  const keys = [1,2,3,4,5,6,7,8,9,'C',0,'OK'];
+  return `
+  <section>
+    <h2>Staff PIN</h2>
+    <div class="pindots" aria-live="polite">${'&#9679;'.repeat(F.pin.length) || '&nbsp;'}</div>
+    <div class="err" role="alert">${esc(F.err)}</div>
+    <div class="pinpad">${keys.map(k => `<button data-act="pin" data-k="${k}">${k === 'C' ? 'Clear' : k}</button>`).join('')}</div>
+    ${STAFF_ROUTE ? '' : '<div class="actions"><button class="btn" data-act="home">Cancel</button></div>'}
+  </section>`;
+}
+
+// RED PHONE: staff screens
+function vStaff(){
+  const tab = k => `<button class="chip" data-act="tab" data-k="${k}" aria-pressed="${F.tab === k}">${{queue:'Waiting list', res:'Reservations', flow:'Flow', set:'Settings'}[k]}</button>`;
+  const body = { queue:tQueue, res:tRes, flow:tFlow, set:tSet }[F.tab]();
+  return `
+  <section>
+    <h2>Staff</h2>
+    ${S.online ? '' : '<div class="offline">Can\'t reach the server. Changes won\'t save until it\'s back.</div>'}
+    <div class="tabs">${tab('queue')}${tab('res')}${tab('flow')}${tab('set')}</div>
+    <div class="err" role="alert">${esc(F.err)}</div>
+    ${body}
+    <div class="actions"><button class="btn" data-act="lock">Lock</button></div>
+  </section>`;
+}
+
+function tQueue(){
+  const w = waiting();
+  const seated = S.visits.filter(q => q.status === 'seated');
+  const guests = S.visits.filter(q => q.status !== 'left').reduce((t,q) => t + q.size, 0);
+  return `
+    <div class="stats">
+      <div><span>Waiting now</span><b>${w.length}</b></div>
+      <div><span>Seated today</span><b>${seated.length}</b></div>
+      <div><span>Guests today</span><b>${guests}</b></div>
+      <div><span>Reservations due soon</span><b>${resSoon()}</b></div>
+    </div>` +
+    (w.length ? w.map(q => `
+    <div class="row">
+      <div class="who">#${pad(q.ticket)} ${esc(q.name)}, ${q.size}
+        <small>${q.type === 'res' ? 'Reservation' : 'Walk-in, ' + prefLabel[q.pref]}, waited ${Math.floor((now()-q.createdAt)/60000)} min, quoted ${q.est} min${q.phone ? ', ' + esc(q.phone) : ''}</small></div>
+      <button class="mini go" data-act="seat" data-id="${esc(q.id)}">Seat</button>
+      <button class="mini warn" data-act="left" data-id="${esc(q.id)}">Left</button>
+    </div>`).join('') : '<div class="empty">Nobody is waiting.</div>');
+}
+
+function tRes(){
+  const list = F.resList;
+  return `
+    <h3>Add a reservation</h3>
+    <div class="addres">
+      <div><label for="rName">Name</label><input id="rName" maxlength="30" autocapitalize="words"></div>
+      <div><label for="rSize">Party</label><input id="rSize" type="number" min="1" max="20" value="2"></div>
+      <div><label for="rDate">Date</label><input id="rDate" type="date" value="${F.resDate}"></div>
+      <div><label for="rTime">Time</label><input id="rTime" type="time"></div>
+      <div><label for="rPhone">Phone</label><input id="rPhone" inputmode="tel" maxlength="14"></div>
+      <div style="grid-column:span 2"><label for="rNotes">Notes</label><input id="rNotes" maxlength="80"></div>
+      <button class="mini go" data-act="add-res" style="height:50px">Save reservation</button>
+    </div>
+    <h3>Reservations for ${fmtDay(fromKey(F.resDate))}</h3>
+    <div class="chips">
+      <button class="chip" data-act="res-day" data-k="-1">Previous day</button>
+      <button class="chip" data-act="res-day" data-k="0">Today</button>
+      <button class="chip" data-act="res-day" data-k="1">Next day</button>
+    </div>
+    ${list === null ? '<div class="empty">Loading...</div>' : list.length ? list.map(r => `
+    <div class="row ${['noshow','cancelled'].includes(r.status) ? 'dim' : ''}">
+      <div class="who">${fmtClock(r.at)} ${esc(r.name)}, ${r.size}<small>${resLabel[r.status]}${r.phone ? ', ' + esc(r.phone) : ''}${r.notes ? ', ' + esc(r.notes) : ''}</small></div>
+      ${r.status === 'booked' ? `<button class="mini go" data-act="res-in" data-id="${esc(r.id)}">Check in</button>
+        <button class="mini" data-act="res-st" data-st="noshow" data-id="${esc(r.id)}">No-show</button>
+        <button class="mini warn" data-act="res-st" data-st="cancelled" data-id="${esc(r.id)}">Cancel</button>` : ''}
+      ${['noshow','cancelled'].includes(r.status) ? `<button class="mini" data-act="res-st" data-st="booked" data-id="${esc(r.id)}">Restore</button>` : ''}
+    </div>`).join('') : '<div class="empty">No reservations on this day.</div>'}`;
+}
+
+// RED PHONE: flow math. Averages each weekday by hour across the chosen range.
+function flowData(){
+  const s = S.settings, hours = [];
+  for(let h = s.openHour; h < s.closeHour; h++) hours.push(h);
+  const order = [1,2,3,4,5,6,0], names = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const end = now(), start = dayStart(new Date(end - (F.range - 1) * 86400000));
+  const dayCount = [0,0,0,0,0,0,0];
+  for(let t = start; t <= end; t += 86400000) dayCount[new Date(t).getDay()]++;
+  const g = {}, p = {};
+  order.forEach(d => { g[d] = {}; p[d] = {}; hours.forEach(h => { g[d][h] = 0; p[d][h] = 0; }); });
+  const visits = F.hist.visits;
+  visits.forEach(v => {
+    const dt = new Date(v.createdAt), d = dt.getDay(), h = dt.getHours();
+    if(g[d] && h in g[d]){ g[d][h] += v.size; p[d][h] += 1; }
+  });
+  const avg = (o, d, h) => dayCount[d] ? o[d][h] / dayCount[d] : 0;
+  let maxV = 0, busiest = null;
+  order.forEach(d => hours.forEach(h => {
+    const v = avg(F.metric === 'guests' ? g : p, d, h); if(v > maxV) maxV = v;
+    const gv = avg(g, d, h); if(!busiest || gv > busiest.v) busiest = { d, h, v:gv };
+  }));
+  const seated = visits.filter(v => v.seatedAt);
+  const avgWait = seated.length ? Math.round(seated.reduce((t,v) => t + (v.seatedAt - v.createdAt), 0) / seated.length / 60000) : null;
+  const avgQuote = visits.length ? Math.round(visits.reduce((t,v) => t + v.est, 0) / visits.length) : null;
+  return { hours, order, names, g, p, avg, maxV, busiest, avgWait, avgQuote,
+    parties: visits.length, guests: visits.reduce((t,v) => t + v.size, 0),
+    noshows: F.hist.res.filter(r => r.status === 'noshow').length, resTotal: F.hist.res.length };
+}
+function heat(t){
+  if(t <= 0) return '#f4f8f7';
+  const stops = [[0,[226,242,236]],[0.5,[242,193,78]],[1,[179,32,46]]];
+  let i = t <= 0.5 ? 0 : 1; const a = stops[i], b = stops[i+1], k = (t - a[0]) / (b[0] - a[0]);
+  const c = a[1].map((v,j) => Math.round(v + (b[1][j] - v) * k));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+function level(gv){ const s = S.settings; return gv >= s.fullAt ? 'full' : gv < s.halfBelow ? 'half' : ''; }
+function blocks(list){
+  const out = []; let st = null, prev = null;
+  list.forEach(h => { if(st === null){ st = h; prev = h; } else if(h === prev + 1){ prev = h; } else { out.push([st, prev]); st = h; prev = h; } });
+  if(st !== null) out.push([st, prev]);
+  return out.map(([a,b]) => hourLabel(a) + ' to ' + hourLabel(b + 1));
+}
+const joinAnd = arr => arr.length < 2 ? (arr[0] || '') : arr.slice(0,-1).join(', ') + ' and ' + arr[arr.length-1];
+
+function tFlow(){
+  const rangeChip = n => `<button class="chip" data-act="range" data-k="${n}" aria-pressed="${F.range === n}">Last ${n} days</button>`;
+  const metChip = (k, l) => `<button class="chip" data-act="metric" data-k="${k}" aria-pressed="${F.metric === k}">${l}</button>`;
+  const head = `<div class="chips">${rangeChip(7)}${rangeChip(30)}${rangeChip(90)}</div>
+    <div class="chips" style="margin-top:8px">${metChip('guests','Guests per hour')}${metChip('parties','Parties per hour')}</div>`;
+  if(!F.hist) return head + '<div class="empty">Loading history...</div>';
+  if(!F.hist.visits.length) return head + '<div class="empty">No visits recorded in this range yet. Every check-in from now on lands here. To see how it looks, load demo history from Settings.</div>';
+  const D = flowData(), s = S.settings;
+  const src = F.metric === 'guests' ? D.g : D.p;
+  const fmt = v => v === 0 ? '' : v < 10 ? v.toFixed(1).replace(/\.0$/,'') : Math.round(v);
+  const rows = D.order.map(d => `<tr><th class="day" scope="row">${D.names[d].slice(0,3)}</th>${D.hours.map(h => {
+    const v = D.avg(src, d, h), gv = D.avg(D.g, d, h), t = D.maxV ? v / D.maxV : 0;
+    return `<td class="${level(gv)}" style="background:${heat(t)};color:${t > 0.62 ? '#fff' : 'var(--ink)'}" title="${D.names[d]} ${hourLabel(h)}: ${fmt(v)}">${fmt(v)}</td>`;
+  }).join('')}</tr>`).join('');
+  const plan = D.order.map(d => {
+    const full = D.hours.filter(h => D.avg(D.g, d, h) >= s.fullAt);
+    const half = D.hours.filter(h => D.avg(D.g, d, h) < s.halfBelow);
+    const parts = [];
+    if(full.length) parts.push('full staff ' + joinAnd(blocks(full)));
+    if(half.length) parts.push('half staff ' + joinAnd(blocks(half)));
+    return `<p><b>${D.names[d]}:</b> ${parts.length ? parts.join('. ').replace(/^./, c => c.toUpperCase()) + '.' : 'Regular staffing all day.'}</p>`;
+  }).join('');
+  return head + `
+    <div class="stats">
+      <div><span>Parties</span><b>${D.parties}</b></div>
+      <div><span>Guests</span><b>${D.guests}</b></div>
+      <div><span>Average real wait</span><b>${D.avgWait === null ? 'n/a' : D.avgWait + ' min'}</b></div>
+      <div><span>Average quoted wait</span><b>${D.avgQuote === null ? 'n/a' : D.avgQuote + ' min'}</b></div>
+      <div><span>No-shows</span><b>${D.noshows} of ${D.resTotal}</b></div>
+      <div><span>Busiest hour</span><b style="font-size:19px">${D.busiest && D.busiest.v ? D.names[D.busiest.d].slice(0,3) + ' ' + hourLabel(D.busiest.h) : 'n/a'}</b></div>
+    </div>
+    <h3>Average ${F.metric === 'guests' ? 'guests' : 'parties'} arriving per hour</h3>
+    <div class="hm-wrap"><table class="hm">
+      <thead><tr><th class="day"></th>${D.hours.map(h => `<th scope="col">${hourShort(h)}</th>`).join('')}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div class="legend">
+      <span><i style="background:${heat(.15)}"></i>Quiet</span>
+      <span><i style="background:${heat(.5)}"></i>Steady</span>
+      <span><i style="background:${heat(1)}"></i>Busiest</span>
+      <span><i style="background:#fff;box-shadow:inset 0 -5px 0 var(--ink)"></i>Full staff, ${s.fullAt}+ guests</span>
+      <span><i style="background:#fff;box-shadow:inset 0 -5px 0 var(--mintmark)"></i>Half staff, under ${s.halfBelow} guests</span>
+    </div>
+    <h3>Staffing plan from this range</h3>
+    <div class="plan">${plan}</div>
+    <div class="actions"><button class="btn" data-act="csv">Export visits as CSV</button></div>`;
+}
+
+function tSet(){
+  const s = S.settings;
+  const n = (k, label, min, max) => `<div><label for="s_${k}">${label}</label><input id="s_${k}" data-set="${k}" type="number" min="${min}" max="${max}" value="${s[k]}"></div>`;
+  return `
+    <label class="toggle"><input type="checkbox" data-set="full" ${s.full ? 'checked' : ''}> Reservations are full tonight</label>
+    <h3>Wait time</h3>
+    <div class="set">
+      ${n('tables','Tables turning over at once',1,50)}
+      ${n('perParty','Minutes added per waiting party',0,60)}
+      ${n('perRes','Minutes added per reservation due soon',0,60)}
+      ${n('window','Count reservations due within (min)',0,240)}
+      ${n('fullBump','Extra minutes when reservations are full',0,90)}
+      ${n('minWait','Shortest wait ever shown (min)',0,60)}
+      ${n('bigParty','Large party starts at',2,20)}
+      ${n('bigBump','Extra minutes for a large party',0,60)}
+      ${n('grace','Reservation hold time on arrival (min)',0,30)}
+    </div>
+    <h3>Hours and staffing</h3>
+    <div class="set">
+      ${n('openHour','Opening hour (0 to 23)',0,23)}
+      ${n('closeHour','Closing hour (1 to 24)',1,24)}
+      ${n('fullAt','Full staff at this many guests per hour',1,500)}
+      ${n('halfBelow','Half staff under this many guests per hour',0,500)}
+    </div>
+    <h3>Kiosk</h3>
+    <div class="set">
+      <div><label for="s_name">Restaurant name on screen</label><input id="s_name" data-set="name" maxlength="30" value="${esc(s.name)}"></div>
+      <div><label for="s_pin">Staff PIN (4 to 6 digits)</label><input id="s_pin" data-set="pin" inputmode="numeric" maxlength="6" value="${esc(STAFF)}"></div>
+    </div>
+    <div class="actions">
+      <button class="btn go" data-act="save-set" ${F.busy ? 'disabled' : ''}>${F.note === 'saved' ? 'Saved' : 'Save settings'}</button>
+    </div>
+    <h3>Demo history</h3>
+    <p class="hint" style="font-size:16px">Fills the last 8 weeks with sample visits so the Flow tab has something to show. Demo visits are tagged and can be removed without touching real ones.</p>
+    <div class="actions" style="margin-top:12px">
+      <button class="btn" data-act="seed" ${F.busy ? 'disabled' : ''}>${F.note === 'seeding' ? 'Loading...' : 'Load demo history'}</button>
+      <button class="btn" data-act="clear-demo" style="border-color:var(--cherry);color:var(--cherry)" ${F.busy ? 'disabled' : ''}>Remove demo history</button>
+    </div>
+    ${F.note && !['saved','seeding'].includes(F.note) ? `<p class="hint" style="font-size:16px">${esc(F.note)}</p>` : ''}`;
+}
+
+// RED PHONE: render
+function render(){
+  const map = { home:vHome, walkin:vWalkin, res:vRes, resconfirm:vResConfirm, ticket:vTicket, pin:vPin, staff:vStaff };
+  view.innerHTML = (map[F.view] || vHome)();
+  const first = view.querySelector('input.t');
+  if(first && ['walkin','res'].includes(F.view) && !first.value) first.focus({preventScroll:true});
+}
+function go(v, extra){ F = Object.assign(fresh(), extra || {}, { view:v }); render(); window.scrollTo(0,0); }
+
+async function loadResDay(){
+  F.resList = null; render();
+  const from = fromKey(F.resDate);
+  try{ const j = await api('history', null, { from, to: from + 86400000 - 1 }); F.resList = j.res.sort((a,b) => a.at - b.at); }
+  catch(e){ F.resList = []; F.err = e.message; }
+  if(F.view === 'staff') render();
+}
+async function loadHist(){
+  F.hist = null; render();
+  const to = now(), from = dayStart(new Date(to - (F.range - 1) * 86400000));
+  try{ F.hist = await api('history', null, { from, to }); F.histFor = F.range; }
+  catch(e){ F.hist = { visits:[], res:[] }; F.err = e.message; }
+  if(F.view === 'staff') render();
+}
+
+// RED PHONE: demo history shaped like a diner. Breakfast, lunch, and dinner rushes, busier weekends.
+function demoVisits(){
+  const s = S.settings, out = [];
+  const bump = (x, mu, sg) => Math.exp(-((x + .5 - mu) ** 2) / (2 * sg * sg));
+  for(let d = 56; d >= 1; d--){
+    const day = new Date(); day.setHours(0,0,0,0); day.setDate(day.getDate() - d);
+    const wd = day.getDay(), wknd = wd === 0 || wd === 6, fri = wd === 5;
+    for(let h = s.openHour; h < s.closeHour; h++){
+      const curve = 1.5 + 9 * bump(h, 8.5, 1.3) * (wknd ? 1.7 : 1) + 8 * bump(h, 12.5, 1) * (wknd ? .9 : 1.2) + 9 * bump(h, 18.5, 1.2) * (fri || wd === 6 ? 1.5 : 1);
+      const n = Math.max(0, Math.round(curve * (.75 + Math.random() * .5)));
+      for(let i = 0; i < n; i++){
+        const createdAt = day.getTime() + h * 3600000 + Math.floor(Math.random() * 3600000);
+        const size = [1,2,2,2,3,4,4,5,6][Math.floor(Math.random() * 9)];
+        const est = Math.max(5, 5 * Math.round(curve / 2 + Math.random() * 2));
+        const left = Math.random() < .05;
+        out.push({ name:'Guest', size, type: Math.random() < .3 ? 'res' : 'walkin', createdAt, est, status: left ? 'left' : 'seated',
+          seatedAt: left ? null : createdAt + Math.max(1, est + Math.round((Math.random() - .3) * 10)) * 60000 });
+      }
+    }
+  }
+  return out;
+}
+
+// RED PHONE: actions
+async function act(a, d){
+  F.err = '';
+  switch(a){
+    case 'home': go('home'); refresh().then(() => { if(F.view === 'home') render(); }); break;
+    case 'lock': STAFF = ''; go(STAFF_ROUTE ? 'pin' : 'home'); break;
+    case 'go-walkin': go('walkin'); break;
+    case 'go-res': go('res'); break;
+    case 'dec': F.size = Math.max(1, F.size - 1); render(); break;
+    case 'inc': F.size = Math.min(20, F.size + 1); if(F.size > 2 && F.pref === 'counter') F.pref = 'any'; render(); break;
+    case 'pref': F.pref = d.k; render(); break;
+
+    case 'checkin-walkin': {
+      const name = F.name.trim(), digits = F.phone.replace(/\D/g,'');
+      if(!name){ F.err = 'Enter a name so we can call you.'; render(); return; }
+      if(digits && digits.length < 10){ F.err = 'Enter a 10 digit phone number, or leave it blank.'; render(); return; }
+      F.busy = true; render();
+      try{
+        const j = await api('checkin', { dayKey: dayKey(new Date()), visit:{ name, size:F.size, pref:F.pref, phone: digits ? F.phone.trim() : '', type:'walkin', est: estimateWalkin(F.size) } });
+        S.visits.push(j.visit); go('ticket', { ticket:j.visit, ticketAt:now() });
+      }catch(e){ F.busy = false; F.err = 'Check-in did not go through. Please try again or see a staff member.'; render(); }
+      break;
+    }
+    case 'search-res': {
+      const q = F.q.trim().toLowerCase();
+      if(q.length < 2){ F.err = 'Type at least 2 letters of the name.'; render(); return; }
+      await refresh();
+      F.results = S.res.filter(r => r.status === 'booked' && r.name.toLowerCase().includes(q)).sort((a,b) => a.at - b.at); render(); break;
+    }
+    case 'pick-res': F.resId = d.id; F.view = 'resconfirm'; render(); break;
+    case 'checkin-res': {
+      const r = S.res.find(x => x.id === F.resId); if(!r){ go('res'); return; }
+      F.busy = true; render();
+      try{
+        const j = await api('checkin', { dayKey: dayKey(new Date()), visit:{ type:'res', resId:r.id, est: estimateRes(r) } });
+        r.status = 'arrived'; S.visits.push(j.visit); go('ticket', { ticket:j.visit, ticketAt:now() });
+      }catch(e){ F.busy = false; F.err = e.message; render(); }
+      break;
+    }
+
+    case 'pin': {
+      if(d.k === 'C'){ F.pin = ''; render(); return; }
+      if(d.k !== 'OK'){ if(F.pin.length < 6) F.pin += d.k; render(); return; }
+      try{
+        const j = await api('login', { pin:F.pin });
+        if(j.ok){ STAFF = F.pin; go('staff'); refresh().then(() => { if(F.view === 'staff') render(); }); return; }
+        F.err = 'That PIN does not match. Try again.';
+      }catch(e){ F.err = 'Can\'t reach the server to check the PIN.'; }
+      F.pin = ''; render(); break;
+    }
+    case 'tab':
+      F.tab = d.k; F.note = ''; render();
+      if(d.k === 'res') loadResDay();
+      if(d.k === 'flow' && (!F.hist || F.histFor !== F.range)) loadHist();
+      if(d.k === 'queue') refresh().then(() => { if(F.view === 'staff') render(); });
+      break;
+
+    case 'seat': case 'left': {
+      try{ await api('visit-status', { id:d.id, status: a === 'seat' ? 'seated' : 'left' }); await refresh(); }
+      catch(e){ F.err = e.message; }
+      render(); break;
+    }
+    case 'add-res': {
+      const name = document.getElementById('rName').value.trim();
+      const size = parseInt(document.getElementById('rSize').value, 10);
+      const date = document.getElementById('rDate').value, time = document.getElementById('rTime').value;
+      const phone = document.getElementById('rPhone').value.trim(), notes = document.getElementById('rNotes').value.trim();
+      if(!name || !date || !time || !(size >= 1)){ F.err = 'Enter a name, party size, date, and time.'; render(); return; }
+      const [hh, mm] = time.split(':').map(Number), at = fromKey(date) + hh * 3600000 + mm * 60000;
+      try{ await api('res-add', { name, size, at, phone, notes }); F.resDate = date; await refresh(); loadResDay(); }
+      catch(e){ F.err = e.message; render(); }
+      break;
+    }
+    case 'res-day': {
+      F.resDate = d.k === '0' ? dayKey(new Date()) : dayKey(new Date(fromKey(F.resDate) + Number(d.k) * 86400000 + 3600000 * 12));
+      loadResDay(); break;
+    }
+    case 'res-st': {
+      try{ await api('res-status', { id:d.id, status:d.st }); await refresh(); loadResDay(); }
+      catch(e){ F.err = e.message; render(); }
+      break;
+    }
+    case 'res-in': {
+      const r = (F.resList || []).find(x => x.id === d.id); if(!r) return;
+      try{ await api('checkin', { dayKey: dayKey(new Date()), visit:{ type:'res', resId:r.id, est: estimateRes(r) } }); await refresh(); loadResDay(); }
+      catch(e){ F.err = e.message; render(); }
+      break;
+    }
+
+    case 'range': F.range = Number(d.k); loadHist(); break;
+    case 'metric': F.metric = d.k; render(); break;
+    case 'csv': {
+      const rows = [['date','time','weekday','name','party','type','seating','quoted_min','real_wait_min','status','demo']];
+      F.hist.visits.slice().sort((a,b) => a.createdAt - b.createdAt).forEach(v => {
+        const dt = new Date(v.createdAt);
+        rows.push([dayKey(dt), dt.toTimeString().slice(0,5), dt.toLocaleDateString([], {weekday:'long'}), v.name, v.size, v.type, v.pref, v.est,
+          v.seatedAt ? Math.round((v.seatedAt - v.createdAt) / 60000) : '', v.status, v.demo ? 'yes' : '']);
+      });
+      const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g,'""') + '"').join(',')).join('\n');
+      const a2 = document.createElement('a');
+      a2.href = URL.createObjectURL(new Blob([csv], { type:'text/csv' }));
+      a2.download = 'checkin-visits-' + dayKey(new Date()) + '.csv';
+      document.body.appendChild(a2); a2.click(); a2.remove();
+      break;
+    }
+
+    case 'save-set': {
+      const inc = {};
+      view.querySelectorAll('[data-set]').forEach(el => {
+        const k = el.dataset.set;
+        inc[k] = el.type === 'checkbox' ? el.checked : el.type === 'number' ? Number(el.value) : el.value.trim();
+      });
+      F.busy = true; render();
+      try{
+        const j = await api('settings', { settings:inc });
+        S.settings = Object.assign(S.settings, j.settings); STAFF = inc.pin;
+        document.getElementById('brand').textContent = S.settings.name || 'Check-In Kiosk';
+        F.note = 'saved'; F.hist = null;
+        setTimeout(() => { if(F.note === 'saved'){ F.note = ''; if(F.view === 'staff' && F.tab === 'set') render(); } }, 1500);
+      }catch(e){ F.err = e.message; }
+      F.busy = false; render(); break;
+    }
+    case 'seed': {
+      F.busy = true; F.note = 'seeding'; render();
+      const all = demoVisits(); let added = 0;
+      try{
+        for(let i = 0; i < all.length; i += 800){ const j = await api('seed', { visits: all.slice(i, i + 800) }); added += j.added; }
+        F.note = added + ' demo visits added. Open the Flow tab to see them.'; F.hist = null;
+      }catch(e){ F.err = e.message; F.note = ''; }
+      F.busy = false; render(); break;
+    }
+    case 'clear-demo': {
+      if(!confirm('Remove all demo visits? Real visits and reservations stay.')) return;
+      F.busy = true; render();
+      try{ const j = await api('clear-demo', {}); F.note = j.removed + ' demo visits removed.'; F.hist = null; }
+      catch(e){ F.err = e.message; }
+      F.busy = false; render(); break;
+    }
+  }
+}
+
+// RED PHONE: events
+view.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if(b && !b.disabled) act(b.dataset.act, b.dataset); });
+view.addEventListener('input', e => { const n = e.target.name; if(n && n in F) F[n] = e.target.value; });
+view.addEventListener('keydown', e => {
+  if(e.key !== 'Enter') return;
+  if(F.view === 'walkin' && e.target.matches('input.t')) act('checkin-walkin', {});
+  if(F.view === 'res' && e.target.id === 'q') act('search-res', {});
+});
+['pointerdown','keydown'].forEach(t => document.addEventListener(t, () => { lastTouch = now(); }, { passive:true }));
+
+// RED PHONE: hold the gear 1.5 seconds to reach the PIN screen
+const staffBtn = document.getElementById('staffBtn');
+if(STAFF_ROUTE) staffBtn.hidden = true;
+let holdT = null;
+staffBtn.addEventListener('pointerdown', e => {
+  e.preventDefault(); staffBtn.classList.add('holding');
+  holdT = setTimeout(() => { staffBtn.classList.remove('holding'); go('pin'); }, 1500);
+});
+['pointerup','pointerleave','pointercancel'].forEach(t => staffBtn.addEventListener(t, () => { clearTimeout(holdT); staffBtn.classList.remove('holding'); }));
+staffBtn.addEventListener('contextmenu', e => e.preventDefault());
+
+// RED PHONE: one clock tick runs the clock, ticket countdown, idle reset, and data refresh
+let tick = 0;
+setInterval(async () => {
+  tick++;
+  document.getElementById('clock').textContent = fmtClock(now());
+  if(F.view === 'ticket'){
+    const left = Math.max(0, 45 - Math.floor((now() - F.ticketAt) / 1000));
+    if(left === 0){ act('home', {}); return; }
+    const n = document.getElementById('resetNote'); if(n) n.textContent = `This screen goes back to the start in ${left} seconds.`;
+    const t = document.getElementById('tLeft'); if(t && F.ticket) t.textContent = remaining(F.ticket);
+  }
+  const idle = now() - lastTouch;
+  if(['walkin','res','resconfirm'].includes(F.view) && idle > 90000) act('home', {});
+  if(F.view === 'pin' && !STAFF_ROUTE && idle > 90000) act('home', {});
+  if(F.view === 'staff' && idle > 600000){ act('lock', {}); return; }
+  if(tick % 10 === 0){
+    if(F.view === 'home'){ await refresh(); if(F.view === 'home') render(); }
+    else if(F.view === 'staff' && F.tab === 'queue'){ await refresh(); if(F.view === 'staff' && F.tab === 'queue') render(); }
+    else if(['walkin','res','ticket'].includes(F.view)) refresh();
+  }
+}, 1000);
+
+// RED PHONE: start
+F = fresh();
+document.getElementById('clock').textContent = fmtClock(now());
+render();
+refresh().then(() => { if(['home','pin'].includes(F.view)) render(); });
+</script>
+</body>
+</html>
