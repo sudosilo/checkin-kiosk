@@ -2,8 +2,14 @@
 // RED PHONE: Nothing is ever thrown away. Reservations change status, they are never deleted.
 // RED PHONE: Keys use the ck: prefix so this can share a Redis database with other apps safely.
 
+// CLAUDE: two ways to reach Redis. Upstash REST if those variables are set, otherwise a plain
+// CLAUDE: Redis address in REDIS_URL (Railway Redis public address), spoken over a raw socket.
+const net = require('net');
+const tls = require('tls');
 const RURL = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
 const RTOK = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+const TCPURL = process.env.REDIS_URL || process.env.REDIS_PUBLIC_URL || '';
+const USE_REST = !!(RURL && RTOK);
 const P = 'ck:';
 const DEF = {
   name: '', pin: '1234', tables: 4, perParty: 12, perRes: 8, window: 60, full: false, fullBump: 15,
@@ -14,8 +20,70 @@ const LIMITS = {
   bigBump: [0, 60], grace: [0, 30], minWait: [0, 60], openHour: [0, 23], closeHour: [1, 24], halfBelow: [0, 500], fullAt: [1, 500]
 };
 
+// CLAUDE: raw Redis protocol client. Opens one socket per request, sends every command, reads every reply.
+function encode(args) {
+  const parts = [Buffer.from('*' + args.length + '\r\n')];
+  for (const a of args) {
+    const b = Buffer.from(String(a));
+    parts.push(Buffer.from('$' + b.length + '\r\n'), b, Buffer.from('\r\n'));
+  }
+  return Buffer.concat(parts);
+}
+function parseOne(buf, i) {
+  if (i >= buf.length) return null;
+  const nl = buf.indexOf('\r\n', i);
+  if (nl < 0) return null;
+  const t = String.fromCharCode(buf[i]), line = buf.toString('utf8', i + 1, nl), next = nl + 2;
+  if (t === '+') return { v: line, i: next };
+  if (t === '-') return { v: new Error(line), i: next };
+  if (t === ':') return { v: Number(line), i: next };
+  if (t === '$') {
+    const n = Number(line);
+    if (n < 0) return { v: null, i: next };
+    if (buf.length < next + n + 2) return null;
+    return { v: buf.toString('utf8', next, next + n), i: next + n + 2 };
+  }
+  if (t === '*') {
+    const n = Number(line);
+    if (n < 0) return { v: null, i: next };
+    const out = []; let p = next;
+    for (let k = 0; k < n; k++) { const r = parseOne(buf, p); if (!r) return null; out.push(r.v); p = r.i; }
+    return { v: out, i: p };
+  }
+  throw new Error('Unreadable reply from Redis');
+}
+function tcpRun(cmds) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(TCPURL); } catch (e) { return reject(new Error('REDIS_URL is not a valid address.')); }
+    const pre = [];
+    if (u.password) pre.push(u.username && u.username !== 'default' ? ['AUTH', decodeURIComponent(u.username), decodeURIComponent(u.password)] : ['AUTH', decodeURIComponent(u.password)]);
+    const db = u.pathname && u.pathname.length > 1 ? u.pathname.slice(1) : '';
+    if (db) pre.push(['SELECT', db]);
+    const all = pre.concat(cmds), want = all.length;
+    const opts = { host: u.hostname, port: Number(u.port) || 6379 };
+    const sock = u.protocol === 'rediss:' ? tls.connect(Object.assign({ servername: u.hostname }, opts)) : net.connect(opts);
+    let buf = Buffer.alloc(0), done = false;
+    const finish = (err, val) => { if (done) return; done = true; sock.destroy(); err ? reject(err) : resolve(val); };
+    sock.setTimeout(10000, () => finish(new Error('Redis did not answer in time.')));
+    sock.on('error', e => finish(new Error('Cannot reach Redis: ' + e.message)));
+    sock.on(u.protocol === 'rediss:' ? 'secureConnect' : 'connect', () => sock.write(Buffer.concat(all.map(encode))));
+    sock.on('data', d => {
+      buf = Buffer.concat([buf, d]);
+      const out = []; let p = 0;
+      try {
+        while (out.length < want) { const r = parseOne(buf, p); if (!r) return; out.push(r.v); p = r.i; }
+      } catch (e) { return finish(e); }
+      const bad = out.slice(0, pre.length).find(x => x instanceof Error);
+      if (bad) return finish(new Error('Redis rejected the login: ' + bad.message));
+      finish(null, out.slice(pre.length));
+    });
+  });
+}
+
 // RED PHONE: Redis helpers
 async function cmd(...c) {
+  if (!USE_REST) { const [r] = await tcpRun([c]); if (r instanceof Error) throw r; return r; }
   const r = await fetch(RURL, { method: 'POST', headers: { Authorization: 'Bearer ' + RTOK }, body: JSON.stringify(c.map(String)) });
   const j = await r.json();
   if (j.error) throw new Error(j.error);
@@ -23,6 +91,7 @@ async function cmd(...c) {
 }
 async function pipe(cmds) {
   if (!cmds.length) return [];
+  if (!USE_REST) return (await tcpRun(cmds)).map(x => { if (x instanceof Error) throw x; return x; });
   const r = await fetch(RURL + '/pipeline', { method: 'POST', headers: { Authorization: 'Bearer ' + RTOK }, body: JSON.stringify(cmds.map(c => c.map(String))) });
   const j = await r.json();
   if (!Array.isArray(j)) throw new Error(j.error || 'Redis pipeline failed');
@@ -53,7 +122,7 @@ const PREFS = ['any', 'booth', 'table', 'counter'];
 
 module.exports = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  if (!RURL || !RTOK) return res.status(500).json({ error: 'The database is not connected. Add the Redis environment variables in Vercel and redeploy.' });
+  if (!USE_REST && !TCPURL) return res.status(500).json({ error: 'The database is not connected. Add the Redis environment variables in Vercel and redeploy.' });
   const a = (req.query && req.query.a) || '';
   const b = req.body && typeof req.body === 'object' ? req.body : {};
   try {
