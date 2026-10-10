@@ -5,6 +5,8 @@
   RED PHONE: through /api/kiosk so nothing ends up in a trash can.
   RED PHONE: Staff side: hold the gear 1.5s on the kiosk, or open the site address with /staff on the end.
   RED PHONE: Flow tab draws a weekday by hour heat map and turns it into a full staff / half staff plan.
+  CLAUDE: Guest log tab lists every guest checked in today. Two PINs: the manager PIN opens every tab,
+  CLAUDE: the server PIN opens only the Waiting list and the Guest log.
 -->
 <html lang="en">
 <head>
@@ -142,6 +144,7 @@ table.hm{border-collapse:separate;border-spacing:3px;font-size:13px}
 // RED PHONE: state. S mirrors the server, F is the screen in use.
 const STAFF_ROUTE = location.pathname.replace(/\/+$/,'') === '/staff';
 let STAFF = '';
+let ROLE = '', SERVERPIN = '';
 let S = { settings:{ name:'', tables:4, perParty:12, perRes:8, window:60, full:false, fullBump:15, bigParty:6, bigBump:10, grace:5, minWait:5, openHour:6, closeHour:22, halfBelow:8, fullAt:20 }, visits:[], res:[], online:true, loaded:false };
 const fresh = () => ({ view: STAFF_ROUTE ? 'pin' : 'home', name:'', phone:'', size:2, pref:'any', q:'', results:null, resId:null, ticket:null, ticketAt:0, pin:'', tab:'queue', err:'', busy:false,
   resDate: dayKey(new Date()), resList:null, range:30, metric:'guests', hist:null, histFor:null, note:'' });
@@ -164,6 +167,7 @@ const round5 = n => Math.ceil(n / 5) * 5;
 const pad = n => String(n).padStart(3,'0');
 function ordinal(n){ const s = ['th','st','nd','rd'], v = n % 100; return n + (s[(v-20)%10] || s[v] || s[0]); }
 const prefLabel = { any:'First available', booth:'Booth', table:'Table', counter:'Counter' };
+const visitLabel = { waiting:'Waiting', seated:'Seated', left:'Left' };
 const resLabel = { booked:'Not here yet', arrived:'Checked in', seated:'Seated', noshow:'No-show', cancelled:'Cancelled' };
 
 // RED PHONE: talk to the server
@@ -333,13 +337,16 @@ function vPin(){
 
 // RED PHONE: staff screens
 function vStaff(){
-  const tab = k => `<button class="chip" data-act="tab" data-k="${k}" aria-pressed="${F.tab === k}">${{queue:'Waiting list', res:'Reservations', flow:'Flow', set:'Settings'}[k]}</button>`;
-  const body = { queue:tQueue, res:tRes, flow:tFlow, set:tSet }[F.tab]();
+  const tab = k => `<button class="chip" data-act="tab" data-k="${k}" aria-pressed="${F.tab === k}">${{queue:'Waiting list', log:'Guest log', res:'Reservations', flow:'Flow', set:'Settings'}[k]}</button>`;
+  // CLAUDE: the server PIN only sees the first two tabs
+  const tabs = ROLE === 'manager' ? ['queue','log','res','flow','set'] : ['queue','log'];
+  if(!tabs.includes(F.tab)) F.tab = 'queue';
+  const body = { queue:tQueue, log:tLog, res:tRes, flow:tFlow, set:tSet }[F.tab]();
   return `
   <section>
-    <h2>Staff</h2>
+    <h2>${ROLE === 'manager' ? 'Manager' : 'Server'}</h2>
     ${S.online ? '' : '<div class="offline">Can\'t reach the server. Changes won\'t save until it\'s back.</div>'}
-    <div class="tabs">${tab('queue')}${tab('res')}${tab('flow')}${tab('set')}</div>
+    <div class="tabs">${tabs.map(tab).join('')}</div>
     <div class="err" role="alert">${esc(F.err)}</div>
     ${body}
     <div class="actions"><button class="btn" data-act="lock">Lock</button></div>
@@ -364,6 +371,33 @@ function tQueue(){
       <button class="mini go" data-act="seat" data-id="${esc(q.id)}">Seat</button>
       <button class="mini warn" data-act="left" data-id="${esc(q.id)}">Left</button>
     </div>`).join('') : '<div class="empty">Nobody is waiting.</div>');
+}
+
+// CLAUDE: guest log. Every guest checked in today, newest first, with times and status.
+function tLog(){
+  const all = S.visits.slice().sort((a,b) => b.createdAt - a.createdAt);
+  const seated = all.filter(v => v.status === 'seated' && v.seatedAt);
+  const avgWait = seated.length ? Math.round(seated.reduce((t,v) => t + (v.seatedAt - v.createdAt), 0) / seated.length / 60000) : null;
+  const waitedMin = v => Math.floor(((v.seatedAt || v.endedAt || now()) - v.createdAt) / 60000);
+  const statusText = v => v.status === 'seated' && v.seatedAt ? 'Seated at ' + fmtClock(v.seatedAt)
+    : v.status === 'left' && v.endedAt ? 'Left at ' + fmtClock(v.endedAt) : visitLabel[v.status] || v.status;
+  return `
+    <div class="stats">
+      <div><span>Parties today</span><b>${all.length}</b></div>
+      <div><span>Guests today</span><b>${all.reduce((t,v) => t + v.size, 0)}</b></div>
+      <div><span>Seated</span><b>${all.filter(v => v.status === 'seated').length}</b></div>
+      <div><span>Left before seating</span><b>${all.filter(v => v.status === 'left').length}</b></div>
+      <div><span>Average real wait</span><b>${avgWait === null ? 'n/a' : avgWait + ' min'}</b></div>
+    </div>` +
+    (all.length ? all.map(v => `
+    <div class="row ${v.status === 'left' ? 'dim' : ''}">
+      <div class="who">#${pad(v.ticket)} ${esc(v.name)}, ${v.size}
+        <small>In at ${fmtClock(v.createdAt)}, ${statusText(v)}, ${v.status === 'waiting' ? 'waiting' : 'waited'} ${waitedMin(v)} min, quoted ${v.est} min</small>
+        <small>${v.type === 'res' ? 'Reservation' + (v.resAt ? ' for ' + fmtClock(v.resAt) : '') : 'Walk-in, ' + prefLabel[v.pref]}${v.phone ? ', ' + esc(v.phone) : ''}</small></div>
+      ${v.status === 'waiting' ? `<button class="mini go" data-act="seat" data-id="${esc(v.id)}">Seat</button>
+        <button class="mini warn" data-act="left" data-id="${esc(v.id)}">Left</button>`
+        : `<button class="mini" data-act="unseat" data-id="${esc(v.id)}">Undo</button>`}
+    </div>`).join('') : '<div class="empty">Nobody has checked in today.</div>');
 }
 
 function tRes(){
@@ -514,7 +548,8 @@ function tSet(){
     <h3>Kiosk</h3>
     <div class="set">
       <div><label for="s_name">Restaurant name on screen</label><input id="s_name" data-set="name" maxlength="30" value="${esc(s.name)}"></div>
-      <div><label for="s_pin">Staff PIN (4 to 6 digits)</label><input id="s_pin" data-set="pin" inputmode="numeric" maxlength="6" value="${esc(STAFF)}"></div>
+      <div><label for="s_pin">Manager PIN (4 to 6 digits)</label><input id="s_pin" data-set="pin" inputmode="numeric" maxlength="6" value="${esc(STAFF)}"></div>
+      <div><label for="s_serverPin">Server PIN, waiting list and guest log only</label><input id="s_serverPin" data-set="serverPin" inputmode="numeric" maxlength="6" value="${esc(SERVERPIN)}"></div>
     </div>
     <div class="actions">
       <button class="btn go" data-act="save-set" ${F.busy ? 'disabled' : ''}>${F.note === 'saved' ? 'Saved' : 'Save settings'}</button>
@@ -580,7 +615,7 @@ async function act(a, d){
   F.err = '';
   switch(a){
     case 'home': go('home'); refresh().then(() => { if(F.view === 'home') render(); }); break;
-    case 'lock': STAFF = ''; go(STAFF_ROUTE ? 'pin' : 'home'); break;
+    case 'lock': STAFF = ''; ROLE = ''; SERVERPIN = ''; go(STAFF_ROUTE ? 'pin' : 'home'); break;
     case 'go-walkin': go('walkin'); break;
     case 'go-res': go('res'); break;
     case 'dec': F.size = Math.max(1, F.size - 1); render(); break;
@@ -620,7 +655,7 @@ async function act(a, d){
       if(d.k !== 'OK'){ if(F.pin.length < 6) F.pin += d.k; render(); return; }
       try{
         const j = await api('login', { pin:F.pin });
-        if(j.ok){ STAFF = F.pin; go('staff'); refresh().then(() => { if(F.view === 'staff') render(); }); return; }
+        if(j.ok){ STAFF = F.pin; ROLE = j.role || 'manager'; SERVERPIN = j.serverPin || ''; go('staff'); refresh().then(() => { if(F.view === 'staff') render(); }); return; }
         F.err = 'That PIN does not match. Try again.';
       }catch(e){ F.err = 'Can\'t reach the server to check the PIN.'; }
       F.pin = ''; render(); break;
@@ -629,11 +664,11 @@ async function act(a, d){
       F.tab = d.k; F.note = ''; render();
       if(d.k === 'res') loadResDay();
       if(d.k === 'flow' && (!F.hist || F.histFor !== F.range)) loadHist();
-      if(d.k === 'queue') refresh().then(() => { if(F.view === 'staff') render(); });
+      if(d.k === 'queue' || d.k === 'log') refresh().then(() => { if(F.view === 'staff') render(); });
       break;
 
-    case 'seat': case 'left': {
-      try{ await api('visit-status', { id:d.id, status: a === 'seat' ? 'seated' : 'left' }); await refresh(); }
+    case 'seat': case 'left': case 'unseat': {
+      try{ await api('visit-status', { id:d.id, status: a === 'seat' ? 'seated' : a === 'left' ? 'left' : 'waiting' }); await refresh(); }
       catch(e){ F.err = e.message; }
       render(); break;
     }
@@ -690,7 +725,7 @@ async function act(a, d){
       F.busy = true; render();
       try{
         const j = await api('settings', { settings:inc });
-        S.settings = Object.assign(S.settings, j.settings); STAFF = inc.pin;
+        S.settings = Object.assign(S.settings, j.settings); STAFF = inc.pin; SERVERPIN = inc.serverPin;
         document.getElementById('brand').textContent = S.settings.name || 'Check-In Kiosk';
         F.note = 'saved'; F.hist = null;
         setTimeout(() => { if(F.note === 'saved'){ F.note = ''; if(F.view === 'staff' && F.tab === 'set') render(); } }, 1500);
@@ -754,7 +789,7 @@ setInterval(async () => {
   if(F.view === 'staff' && idle > 600000){ act('lock', {}); return; }
   if(tick % 10 === 0){
     if(F.view === 'home'){ await refresh(); if(F.view === 'home') render(); }
-    else if(F.view === 'staff' && F.tab === 'queue'){ await refresh(); if(F.view === 'staff' && F.tab === 'queue') render(); }
+    else if(F.view === 'staff' && ['queue','log'].includes(F.tab)){ await refresh(); if(F.view === 'staff' && ['queue','log'].includes(F.tab)) render(); }
     else if(['walkin','res','ticket'].includes(F.view)) refresh();
   }
 }, 1000);

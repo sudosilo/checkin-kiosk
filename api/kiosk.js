@@ -12,7 +12,7 @@ const TCPURL = process.env.REDIS_URL || process.env.REDIS_PUBLIC_URL || '';
 const USE_REST = !!(RURL && RTOK);
 const P = 'ck:';
 const DEF = {
-  name: '', pin: '1234', tables: 4, perParty: 12, perRes: 8, window: 60, full: false, fullBump: 15,
+  name: '', pin: '1234', serverPin: '0000', tables: 4, perParty: 12, perRes: 8, window: 60, full: false, fullBump: 15,
   bigParty: 6, bigBump: 10, grace: 5, minWait: 5, openHour: 6, closeHour: 22, halfBelow: 8, fullAt: 20
 };
 const LIMITS = {
@@ -127,16 +127,21 @@ module.exports = async (req, res) => {
   const b = req.body && typeof req.body === 'object' ? req.body : {};
   try {
     const s = await getSettings();
-    const staff = String(req.headers['x-pin'] || '') === String(s.pin);
+    // CLAUDE: two PINs. The manager PIN opens everything, the server PIN opens the waiting list and guest log.
+    const roleOf = p => { p = String(p || ''); return !p ? '' : p === String(s.pin) ? 'manager' : p === String(s.serverPin) ? 'server' : ''; };
+    const role = roleOf(req.headers['x-pin']);
 
     // RED PHONE: open to the kiosk
     if (a === 'state') {
       const from = num(req.query.from), to = num(req.query.to);
       const [visits, resv] = await Promise.all([range('v', from, to), range('r', from, to)]);
-      const pub = Object.assign({}, s); delete pub.pin;
+      const pub = Object.assign({}, s); delete pub.pin; delete pub.serverPin;
       return res.json({ settings: pub, visits, res: resv });
     }
-    if (a === 'login') return res.json({ ok: String(b.pin || '') === String(s.pin) });
+    if (a === 'login') {
+      const r = roleOf(b.pin);
+      return res.json(r === 'manager' ? { ok: true, role: r, serverPin: s.serverPin } : { ok: !!r, role: r });
+    }
 
     if (a === 'checkin') {
       const v = b.visit || {};
@@ -162,7 +167,7 @@ module.exports = async (req, res) => {
     }
 
     // RED PHONE: everything below needs the staff PIN
-    if (!staff) return res.status(401).json({ error: 'Staff PIN required.' });
+    if (!role) return res.status(401).json({ error: 'Staff PIN required.' });
 
     if (a === 'visit-status') {
       const v = await getOne('v', clean(b.id, 40));
@@ -172,13 +177,21 @@ module.exports = async (req, res) => {
       v.status = st;
       if (st === 'seated') v.seatedAt = Date.now();
       if (st === 'left') v.endedAt = Date.now();
+      // CLAUDE: undo puts the guest back on the list and clears the seated and left times
+      if (st === 'waiting') { delete v.seatedAt; delete v.endedAt; }
       await put('v', v, v.createdAt);
       if (v.resId && st === 'seated') {
         const r = await getOne('r', v.resId);
         if (r) { r.status = 'seated'; r.updatedAt = Date.now(); await put('r', r, r.at); }
       }
+      if (v.resId && st === 'waiting') {
+        const r = await getOne('r', v.resId);
+        if (r && r.status === 'seated') { r.status = 'arrived'; r.updatedAt = Date.now(); await put('r', r, r.at); }
+      }
       return res.json({ visit: v });
     }
+    // CLAUDE: everything below needs the manager PIN
+    if (role !== 'manager') return res.status(403).json({ error: 'Manager PIN required.' });
     if (a === 'res-add') {
       const at = num(b.at);
       const r = {
@@ -206,9 +219,14 @@ module.exports = async (req, res) => {
         if (!/^\d{4,6}$/.test(String(inc.pin))) return res.status(400).json({ error: 'PIN must be 4 to 6 digits.' });
         next.pin = String(inc.pin);
       }
+      if ('serverPin' in inc) {
+        if (!/^\d{4,6}$/.test(String(inc.serverPin))) return res.status(400).json({ error: 'Server PIN must be 4 to 6 digits.' });
+        next.serverPin = String(inc.serverPin);
+      }
+      if (next.pin === next.serverPin) return res.status(400).json({ error: 'The server PIN has to be different from the manager PIN.' });
       if (next.closeHour <= next.openHour) return res.status(400).json({ error: 'Closing hour must be after opening hour.' });
       await cmd('SET', P + 'settings', JSON.stringify(next));
-      const pub = Object.assign({}, next); delete pub.pin;
+      const pub = Object.assign({}, next); delete pub.pin; delete pub.serverPin;
       return res.json({ settings: pub });
     }
     if (a === 'history') {
