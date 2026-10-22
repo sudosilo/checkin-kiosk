@@ -1,0 +1,1 @@
+2026-10-10, v2026.10.10. Version 2 of the kiosk saves data to a Redis backend and adds a flow heat map. Added a guest log tab and a server PIN, and the PIN screen now shows the server's own error message.
