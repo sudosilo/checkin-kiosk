@@ -985,7 +985,7 @@ refresh().then(() => { if(['home','pin'].includes(F.view)) render(); });
       +   '</span>'
       + '</div>'
       // BLUE PHONE: donate pill, always visible under the seal row.
-      + '<a class="mtg-donate" href="' + CONFIG.donate + '" target="_blank" rel="noopener">'
+      + '<a class="mtg-donate" href="' + CONFIG.donate + '?client_reference_id=' + ((location.hostname.replace(/\.vercel\.app$/,'').replace(/[^A-Za-z0-9_-]/g,'-')) || 'unknown') + '" target="_blank" rel="noopener">'
       +   '<svg class="mtg-donate-coin" viewBox="0 0 40 40" width="34" height="34" aria-hidden="true">'
       +       '<circle cx="20" cy="20" r="19" fill="#d9b25a" stroke="#8a6a24" stroke-width="1.5"/>'
       +       '<circle cx="20" cy="20" r="14.5" fill="#f2d68a" stroke="#b08a3a" stroke-width="1"/>'
